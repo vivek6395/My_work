@@ -1,0 +1,119 @@
+!pip install langchain
+!pip install langchain-qdrant
+!pip install langchain-huggingface
+!pip install langchain-community
+!pip install huggingface_hub
+!pip install fastembed
+!pip install qdrant-client
+!pip install sentence-transformer
+!pip install sentence-transformers
+
+from qdrant_client import QdrantClient, models
+from langchain_qdrant import QdrantVectorStore
+from langchain_qdrant import FastEmbedSparse, RetrievalMode
+from langchain_huggingface import HuggingFaceEmbeddings
+sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+
+client_path="qdrant/collection"
+collection="mycollection"
+
+
+client=QdrantClient(path=client_path)
+
+
+client.delete_collection(collection_name=collection)
+
+client.create_collection(
+    collection_name=collection,
+    vectors_config={
+        "dense":models.VectorParams(size=len(embeddings.embed_query("hi")),distance=models.Distance.COSINE)
+    },
+    sparse_vectors_config={
+        "sparse": models.SparseVectorParams(),
+    }
+)
+
+import requests
+url="https://www.nothuman.net/images/files/discussion/1/e72f9f1f181a66887baa7270037c582e.pdf"
+
+response=requests.get(url=url)
+file_name="science_book.pdf"
+
+with open(file_name,"wb") as file:
+  file.write(response.content)
+
+from langchain_community.document_loaders import PyPDFLoader
+
+loader = PyPDFLoader(file_name,)
+pages = loader.load()
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+text_splitter = RecursiveCharacterTextSplitter(
+    # Set a really small chunk size, just to show.
+    chunk_size=1250,
+    chunk_overlap=150,
+    length_function=len,
+    is_separator_regex=False,
+)
+
+docs=text_splitter.split_documents(pages)
+
+def preprocess_text(input_str:str):
+  lower_case_str = input_str.lower()
+  result_str = []
+  for char in lower_case_str:
+      if unicodedata.category(char).startswith('P'):
+          result_str.append(' ') 
+      else:
+          result_str.append(char)
+  return ''.join(result_str).replace('\n'," \n ")
+
+import string
+import unicodedata
+
+docs=docs[0:250]
+small_docs=[]
+from langchain_core.documents import Document
+
+for i in docs:
+  new_string=preprocess_text(i.page_content)
+  my_doc=Document(
+      
+      page_content=new_string,
+      metadata={
+      }
+  )
+  small_docs.append(my_doc)
+
+small_docs[0:10]
+
+vector_store_sparse=QdrantVectorStore(
+    client=client,
+    collection_name=collection,
+    retrieval_mode=RetrievalMode.SPARSE,
+    distance=models.Distance.DOT,
+    sparse_embedding=sparse_embeddings,
+    sparse_vector_name="sparse",
+)
+
+vector_store_dense=QdrantVectorStore(
+    client=client,
+    collection_name=collection,
+    embedding=embeddings,
+    vector_name='dense',
+)
+
+base=10000
+sparse_ids=[i for i in range(len(docs))]
+dense_ids=[i+base for i in range(len(docs))]
+
+vector_store_sparse.add_documents(small_docs, ids=sparse_ids)
+vector_store_dense.add_documents(docs,ids=dense_ids)
+print()
+
+query="Ser Waymar looked him over with open disapproval. “I am not going back to Castle"
+query=preprocess_text(query)
+print(query)
+vector_store_sparse.similarity_search_with_score(query)
+
